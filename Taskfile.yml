@@ -1,0 +1,40 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build the project in debug mode
+    cmds:
+      - cargo build
+
+  run:
+    desc: Run fzftask
+    cmds:
+      - cargo run
+
+  test:
+    desc: Run the test suite
+    cmds:
+      - cargo test
+
+  lint:
+    desc: Run clippy and rustfmt checks
+    summary: Lints the codebase and verifies formatting without modifying files.
+    cmds:
+      - cargo clippy --all-targets -- -D warnings
+      - cargo fmt --check
+
+  fmt:
+    desc: Format the codebase
+    cmds:
+      - cargo fmt
+
+  deploy:
+    desc: Example task with required variables
+    summary: Demonstrates fzftask's requires flow (enum + free input).
+    requires:
+      vars:
+        - NAME
+        - name: ENV
+          enum: [dev, staging, prod]
+    cmds:
+      - echo "deploying {{.NAME}} to {{.ENV}}"
