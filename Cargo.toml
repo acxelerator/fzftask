@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "An fzf-style terminal UI for browsing and running Taskfile tasks, built with ratatui"
 license = "MIT"
-repository = "https://github.com/gsy0911/fzftask"
+repository = "https://github.com/acxelerator/fzftask"
 keywords = ["tui", "taskfile", "terminal", "task", "fzf"]
 categories = ["command-line-utilities", "development-tools"]
-authors = ["gsy0911"]
+authors = ["acxelerator"]
 
 [dependencies]
 ratatui = "0.29"

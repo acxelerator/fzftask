@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*" # e.g. v0.1.0
+
+permissions:
+  contents: write # required to create releases
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package binary
+        run: |
+          tar -C target/release -czf fzftask-${{ github.ref_name }}-linux-x86_64.tar.gz fzftask
+
+      - name: Compute source tarball sha256
+        id: sha
+        run: |
+          url="https://github.com/${{ github.repository }}/archive/refs/tags/${{ github.ref_name }}.tar.gz"
+          sum=$(curl -sL "$url" | shasum -a 256 | awk '{print $1}')
+          echo "sha256=$sum" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "Release ${{ github.ref_name }}" \
+            --notes "Source tarball sha256 (for the Homebrew formula): \`${{ steps.sha.outputs.sha256 }}\`" \
+            fzftask-${{ github.ref_name }}-linux-x86_64.tar.gz

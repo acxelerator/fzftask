@@ -4,9 +4,22 @@ An fzf-style terminal user interface for browsing and running [Taskfile](https:/
 
 Inspired by [acxelerator/taskfile-tui](https://github.com/acxelerator/homebrew-taskfile-tui).
 
-## Build & Run
+## Install
+
+### Homebrew (macOS/Linux)
 
 ```bash
+brew tap acxelerator/fzftask https://github.com/acxelerator/fzftask
+brew install fzftask
+```
+
+See [HOMEBREW.md](HOMEBREW.md) for tap and release details.
+
+### From source
+
+```bash
+cargo install --path .   # installs the `fzftask` binary
+# or just run it in place:
 cargo run
 ```
 

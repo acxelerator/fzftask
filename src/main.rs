@@ -411,7 +411,41 @@ fn current_dir() -> std::path::PathBuf {
     env::current_dir().unwrap_or_else(|_| ".".into())
 }
 
+/// Handle `--version` / `--help` before touching the terminal. Returns `true`
+/// if the program should exit without starting the UI.
+fn handle_cli_args() -> bool {
+    for arg in env::args().skip(1) {
+        match arg.as_str() {
+            "-V" | "--version" => {
+                println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+                return true;
+            }
+            "-h" | "--help" => {
+                println!(
+                    "{name} {version}\n{desc}\n\n\
+                     USAGE:\n    {name}\n\n\
+                     Run inside a directory containing a Taskfile.yml. Filter tasks by\n\
+                     typing, pick one with Enter, and the `task <name>` command is printed\n\
+                     to stdout (use the zsh wrapper in shell/fzftask.zsh to load it onto\n\
+                     your prompt).\n\n\
+                     OPTIONS:\n    -h, --help       Print this help\n    -V, --version    Print version",
+                    name = env!("CARGO_PKG_NAME"),
+                    version = env!("CARGO_PKG_VERSION"),
+                    desc = env!("CARGO_PKG_DESCRIPTION"),
+                );
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
+    if handle_cli_args() {
+        return Ok(());
+    }
+
     // Render the TUI to the terminal directly (/dev/tty) so that stdout is
     // reserved for the selected command. This lets a shell wrapper capture the
     // selection with `$(fzftask)` without the UI escape codes leaking into it.
