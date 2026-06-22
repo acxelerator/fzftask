@@ -291,8 +291,9 @@ impl App {
                     _ => {}
                 },
                 Focus::Tasks => match code {
-                    KeyCode::Up => self.previous(),
-                    KeyCode::Down => self.next(),
+                    // j/k navigate too: the tasks pane has no text input.
+                    KeyCode::Up | KeyCode::Char('k') => self.previous(),
+                    KeyCode::Down | KeyCode::Char('j') => self.next(),
                     _ => {}
                 },
             },
@@ -561,7 +562,7 @@ fn browse_ui(f: &mut ratatui::Frame, app: &mut App) {
 
     // Right pane: details of the selected task (or a status message).
     let detail = Paragraph::new(detail_text(app))
-        .block(Block::default().title("description").borders(Borders::ALL))
+        .block(Block::default().title("details").borders(Borders::ALL))
         .style(Style::default().fg(Color::White));
 
     f.render_widget(detail, chunks[1]);
@@ -700,19 +701,24 @@ fn detail_text(app: &App) -> Text<'static> {
     if let Some(task) = app.selected() {
         let mut lines: Vec<Line> = Vec::new();
 
-        if let Some(desc) = &task.desc {
-            lines.push(Line::from(desc.clone()));
-            lines.push(Line::from(""));
-        }
-        if let Some(summary) = &task.summary {
-            lines.push(Line::from(summary.clone()));
+        if task.desc.is_some() || task.summary.is_some() {
+            lines.push(Line::styled(
+                "description:",
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ));
+            if let Some(desc) = &task.desc {
+                lines.push(Line::from(format!("  {desc}")));
+            }
+            if let Some(summary) = &task.summary {
+                lines.push(Line::from(format!("  {summary}")));
+            }
             lines.push(Line::from(""));
         }
 
         if !task.requires.is_empty() {
             lines.push(Line::styled(
                 "requires:",
-                Style::default().add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
             ));
             for var in &task.requires {
                 let line = if var.enum_values.is_empty() {
@@ -728,7 +734,7 @@ fn detail_text(app: &App) -> Text<'static> {
         if !task.cmds.is_empty() {
             lines.push(Line::styled(
                 "commands:",
-                Style::default().add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
             ));
             for cmd in &task.cmds {
                 lines.push(Line::from(format!("  $ {cmd}")));

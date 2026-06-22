@@ -37,6 +37,7 @@ cargo run
 | _any char_  | filter | Type into the filter box            |
 | `Backspace` | filter | Delete a character from filter      |
 | `↑` / `↓`   | both   | Move selection                      |
+| `j` / `k`   | tasks  | Move selection down / up            |
 
 The filter box does a case-insensitive fuzzy (subsequence) match on task
 names, so `delo` matches `deploy`.
