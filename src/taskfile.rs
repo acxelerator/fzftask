@@ -1,6 +1,13 @@
 use indexmap::IndexMap;
 use serde::Deserialize;
-use std::{fmt, path::Path};
+use std::{
+    collections::HashSet,
+    fmt,
+    path::{Path, PathBuf},
+};
+
+/// Guard against pathological / cyclic include graphs.
+const MAX_INCLUDE_DEPTH: usize = 16;
 
 /// Candidate file names for a Taskfile, in the order `task` itself searches.
 const TASKFILE_NAMES: &[&str] = &[
@@ -17,10 +24,66 @@ pub struct Taskfile {
     #[serde(default)]
     #[allow(dead_code)] // parsed for completeness; not yet shown in the UI
     pub version: Option<String>,
+    /// Other Taskfiles pulled in under `includes`. Their tasks are namespaced
+    /// by the include key (e.g. `docs:build`).
+    #[serde(default)]
+    pub includes: IndexMap<String, Include>,
     /// Task name -> definition. `IndexMap` preserves the order tasks appear
     /// in the file so the UI lists them the same way.
     #[serde(default)]
     pub tasks: IndexMap<String, TaskDef>,
+}
+
+/// An entry under `includes`: either a bare path string or a mapping with a
+/// `taskfile`/`dir`/`optional`.
+#[derive(Debug, Clone)]
+pub struct Include {
+    /// Path to the included Taskfile (relative to the including file).
+    pub taskfile: Option<String>,
+    /// Directory to look in when no explicit `taskfile` is given.
+    pub dir: Option<String>,
+    /// A missing optional include is silently skipped instead of erroring.
+    pub optional: bool,
+}
+
+impl<'de> Deserialize<'de> for Include {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            /// `docs: ./docs/Taskfile.yml`
+            Path(String),
+            /// `docs: { taskfile: ..., dir: ..., optional: true }`
+            Detailed {
+                #[serde(default)]
+                taskfile: Option<String>,
+                #[serde(default)]
+                dir: Option<String>,
+                #[serde(default)]
+                optional: bool,
+            },
+        }
+
+        Ok(match Raw::deserialize(deserializer)? {
+            Raw::Path(taskfile) => Include {
+                taskfile: Some(taskfile),
+                dir: None,
+                optional: false,
+            },
+            Raw::Detailed {
+                taskfile,
+                dir,
+                optional,
+            } => Include {
+                taskfile,
+                dir,
+                optional,
+            },
+        })
+    }
 }
 
 /// A single task definition.
@@ -46,16 +109,102 @@ pub struct RequiredVar {
 }
 
 impl Taskfile {
-    /// Find and parse the nearest Taskfile in `dir`.
+    /// Find the nearest Taskfile in `dir`, parse it, and recursively merge any
+    /// `includes`. Tasks from an include are namespaced by the include key
+    /// (e.g. `docs:build`), matching `task`'s own behaviour.
     pub fn load_from_dir(dir: &Path) -> Result<Self, LoadError> {
-        let path = TASKFILE_NAMES
-            .iter()
-            .map(|name| dir.join(name))
-            .find(|p| p.is_file())
-            .ok_or(LoadError::NotFound)?;
+        let path = find_taskfile(dir).ok_or(LoadError::NotFound)?;
 
-        let contents = std::fs::read_to_string(&path).map_err(LoadError::Io)?;
-        serde_yaml_ng::from_str(&contents).map_err(LoadError::Parse)
+        let mut tasks = IndexMap::new();
+        let mut visited = HashSet::new();
+        let version = merge_file(&path, "", &mut tasks, &mut visited, 0)?;
+
+        Ok(Taskfile {
+            version,
+            includes: IndexMap::new(),
+            tasks,
+        })
+    }
+}
+
+/// Locate a Taskfile inside `dir` by trying the known file names in order.
+fn find_taskfile(dir: &Path) -> Option<PathBuf> {
+    TASKFILE_NAMES
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|p| p.is_file())
+}
+
+/// Parse the Taskfile at `path`, add its tasks (prefixed with `prefix`) to
+/// `tasks`, then recurse into its includes. Returns the file's own `version`.
+fn merge_file(
+    path: &Path,
+    prefix: &str,
+    tasks: &mut IndexMap<String, TaskDef>,
+    visited: &mut HashSet<PathBuf>,
+    depth: usize,
+) -> Result<Option<String>, LoadError> {
+    if depth > MAX_INCLUDE_DEPTH {
+        return Ok(None);
+    }
+    // Skip files already processed to break include cycles.
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if !visited.insert(canonical) {
+        return Ok(None);
+    }
+
+    let contents = std::fs::read_to_string(path).map_err(LoadError::Io)?;
+    let parsed: Taskfile = serde_yaml_ng::from_str(&contents).map_err(LoadError::Parse)?;
+
+    for (name, def) in parsed.tasks {
+        let key = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}{name}")
+        };
+        tasks.insert(key, def);
+    }
+
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    for (namespace, include) in &parsed.includes {
+        let Some(include_path) = resolve_include(base, include) else {
+            continue; // remote (http) or unresolved include
+        };
+        let nested_prefix = format!("{prefix}{namespace}:");
+        match merge_file(&include_path, &nested_prefix, tasks, visited, depth + 1) {
+            Ok(_) => {}
+            // Missing includes are tolerated (optional or not) so one broken
+            // include does not make the whole TUI fail to load.
+            Err(LoadError::NotFound | LoadError::Io(_)) => {}
+            // Propagate genuine parse errors only for required includes.
+            Err(e) => {
+                if !include.optional {
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    Ok(parsed.version)
+}
+
+/// Resolve the path to an included Taskfile, or `None` for remote/unresolvable
+/// includes. A directory resolves to the Taskfile it contains.
+fn resolve_include(base: &Path, include: &Include) -> Option<PathBuf> {
+    let rel = include.taskfile.as_deref().or(include.dir.as_deref())?;
+
+    // fzftask is a local tool; skip remote includes.
+    if rel.starts_with("http://") || rel.starts_with("https://") {
+        return None;
+    }
+
+    let joined = base.join(rel);
+    if joined.is_dir() {
+        find_taskfile(&joined)
+    } else if joined.is_file() {
+        Some(joined)
+    } else {
+        None
     }
 }
 
@@ -248,5 +397,76 @@ tasks:
         // Detailed name with enum candidates.
         assert_eq!(deploy.requires[1].name, "ENV");
         assert_eq!(deploy.requires[1].enum_values, ["dev", "staging", "prod"]);
+    }
+
+    #[test]
+    fn merges_includes_with_namespaced_tasks() {
+        // Build a throwaway directory tree:
+        //   root/Taskfile.yml          (build; includes docs + sub)
+        //   root/docs/Taskfile.yml     (serve)
+        //   root/nested/Taskfile.yml   (deploy; includes inner)
+        //   root/nested/inner.yml      (run)
+        let root = std::env::temp_dir().join(format!("fzftask-inc-{}", std::process::id()));
+        let docs = root.join("docs");
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+
+        std::fs::write(
+            root.join("Taskfile.yml"),
+            "version: '3'\n\
+             includes:\n  \
+               docs: ./docs\n  \
+               sub:\n    taskfile: ./nested/Taskfile.yml\n\
+             tasks:\n  build:\n    cmds: [cargo build]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            docs.join("Taskfile.yml"),
+            "version: '3'\ntasks:\n  serve:\n    cmds: [mkdocs serve]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            nested.join("Taskfile.yml"),
+            "version: '3'\n\
+             includes:\n  inner: ./inner.yml\n\
+             tasks:\n  deploy:\n    cmds: [echo deploy]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            nested.join("inner.yml"),
+            "version: '3'\ntasks:\n  run:\n    cmds: [echo run]\n",
+        )
+        .unwrap();
+
+        let tf = Taskfile::load_from_dir(&root).unwrap();
+        let names: Vec<&str> = tf.tasks.keys().map(|s| s.as_str()).collect();
+
+        // Root task, directory include, file include, and a nested include.
+        assert!(names.contains(&"build"));
+        assert!(names.contains(&"docs:serve"));
+        assert!(names.contains(&"sub:deploy"));
+        assert!(names.contains(&"sub:inner:run"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn optional_missing_include_is_skipped() {
+        let root = std::env::temp_dir().join(format!("fzftask-opt-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Taskfile.yml"),
+            "version: '3'\n\
+             includes:\n  \
+               missing:\n    taskfile: ./nope/Taskfile.yml\n    optional: true\n\
+             tasks:\n  build:\n    cmds: [cargo build]\n",
+        )
+        .unwrap();
+
+        let tf = Taskfile::load_from_dir(&root).unwrap();
+        assert!(tf.tasks.contains_key("build"));
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }

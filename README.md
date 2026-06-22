@@ -59,6 +59,18 @@ tasks:
           enum: [dev, staging, prod]
 ```
 
+### Includes
+
+Tasks pulled in via `includes` are listed with the include's namespace prefix
+(e.g. `docs:serve`), just like `task` itself. Nested includes and directory
+includes are followed; `optional: true` includes that are missing are skipped,
+and remote (`http(s)`) includes are ignored.
+
+```yaml
+includes:
+  docs: ./taskfiles/docs.yml   # adds docs:serve, docs:build, …
+```
+
 ## Shell integration
 
 fzftask renders to `/dev/tty` and prints the chosen `task <name>` to stdout, so

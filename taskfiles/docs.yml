@@ -1,0 +1,11 @@
+version: '3'
+
+tasks:
+  serve:
+    desc: Serve the documentation locally
+    cmds:
+      - echo "serving docs"
+  build:
+    desc: Build the documentation site
+    cmds:
+      - echo "building docs"
