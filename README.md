@@ -9,7 +9,8 @@ Inspired by [acxelerator/taskfile-tui](https://github.com/acxelerator/homebrew-t
 ### Homebrew (macOS/Linux)
 
 ```bash
-brew tap acxelerator/fzftask https://github.com/acxelerator/fzftask
+brew tap acxelerator/fzftask
+brew trust acxelerator/fzftask   # Homebrew 6.0+ requires trusting third-party taps
 brew install fzftask
 ```
 
