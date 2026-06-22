@@ -285,7 +285,9 @@ impl<'de> Deserialize<'de> for TaskDef {
             }
         }
 
-        /// A command entry: either a plain string or a mapping with a `cmd` key.
+        /// A command entry: a plain string, a mapping with a `cmd`/`task` key,
+        /// or anything else (e.g. a `null` produced by a comment-only list item
+        /// such as `- # note`, or a `defer:`/`for:` form we don't display).
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Cmd {
@@ -296,6 +298,9 @@ impl<'de> Deserialize<'de> for TaskDef {
                 #[serde(default)]
                 task: Option<String>,
             },
+            // Catch-all so an unexpected shape skips the entry instead of
+            // failing the whole task. Must be last (it matches anything).
+            Other(serde::de::IgnoredAny),
         }
 
         impl Cmd {
@@ -304,7 +309,7 @@ impl<'de> Deserialize<'de> for TaskDef {
                     Cmd::Str(s) => Some(s),
                     Cmd::Map { cmd: Some(c), .. } => Some(c),
                     Cmd::Map { task: Some(t), .. } => Some(format!("task: {t}")),
-                    Cmd::Map { .. } => None,
+                    Cmd::Map { .. } | Cmd::Other(_) => None,
                 }
             }
         }
@@ -335,6 +340,44 @@ impl<'de> Deserialize<'de> for TaskDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression test modelled on real-world Taskfiles (e.g. paak-develop/raund):
+    // a comment-only command list item like `- # note` is parsed by YAML as a
+    // `null`, and tasks carry many fields fzftask does not model (dir, silent,
+    // internal, status, vars/sh, ...). None of these should fail the parse.
+    #[test]
+    fn tolerates_null_commands_and_unmodelled_fields() {
+        let yaml = r#"
+version: '3'
+vars:
+  ENV:
+    sh: echo dev
+tasks:
+  ci-all:
+    desc: run all CI checks
+    dir: frontend/src-v2
+    silent: true
+    internal: false
+    status:
+      - test -f marker
+    cmds:
+      - # FORMAT
+      - npm run format-check
+      - # LINT
+      - npm run lint
+      - task: setup
+      - cmd: echo done
+"#;
+        let tf: Taskfile = serde_yaml_ng::from_str(yaml).unwrap();
+        let ci = &tf.tasks["ci-all"];
+
+        assert_eq!(ci.desc.as_deref(), Some("run all CI checks"));
+        // null (comment-only) entries are dropped; real commands keep order.
+        assert_eq!(
+            ci.cmds,
+            ["npm run format-check", "npm run lint", "task: setup", "echo done"]
+        );
+    }
 
     #[test]
     fn parses_full_and_shorthand_tasks() {
