@@ -97,6 +97,8 @@ pub struct TaskDef {
     pub cmds: Vec<String>,
     /// Variables the task declares under `requires.vars`.
     pub requires: Vec<RequiredVar>,
+    /// `internal: true` tasks are callable only by other tasks; hide them.
+    pub internal: bool,
 }
 
 /// A variable a task requires before it can run (`requires.vars`).
@@ -157,6 +159,10 @@ fn merge_file(
     let parsed: Taskfile = serde_yaml_ng::from_str(&contents).map_err(LoadError::Parse)?;
 
     for (name, def) in parsed.tasks {
+        // `internal: true` tasks are not meant to be invoked directly; hide them.
+        if def.internal {
+            continue;
+        }
         let key = if prefix.is_empty() {
             name
         } else {
@@ -250,6 +256,8 @@ impl<'de> Deserialize<'de> for TaskDef {
                 cmds: Vec<Cmd>,
                 #[serde(default)]
                 requires: Option<Requires>,
+                #[serde(default)]
+                internal: bool,
             },
         }
 
@@ -325,6 +333,7 @@ impl<'de> Deserialize<'de> for TaskDef {
                 summary,
                 cmds,
                 requires,
+                internal,
             } => TaskDef {
                 desc,
                 summary,
@@ -332,6 +341,7 @@ impl<'de> Deserialize<'de> for TaskDef {
                 requires: requires
                     .map(|r| r.vars.into_iter().map(VarSpec::into_required).collect())
                     .unwrap_or_default(),
+                internal,
             },
         })
     }
@@ -509,6 +519,26 @@ tasks:
 
         let tf = Taskfile::load_from_dir(&root).unwrap();
         assert!(tf.tasks.contains_key("build"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn internal_tasks_are_hidden() {
+        let root = std::env::temp_dir().join(format!("fzftask-int-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("Taskfile.yml"),
+            "version: '3'\n\
+             tasks:\n  \
+               build:\n    cmds: [cargo build]\n  \
+               _setup:\n    internal: true\n    cmds: [echo setup]\n",
+        )
+        .unwrap();
+
+        let tf = Taskfile::load_from_dir(&root).unwrap();
+        assert!(tf.tasks.contains_key("build"));
+        assert!(!tf.tasks.contains_key("_setup"));
 
         std::fs::remove_dir_all(&root).ok();
     }

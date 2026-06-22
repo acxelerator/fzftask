@@ -1,6 +1,6 @@
 [package]
 name = "fzftask"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 description = "An fzf-style terminal UI for browsing and running Taskfile tasks, built with ratatui"
 license = "MIT"
