@@ -12,6 +12,9 @@ Inspired by [acxelerator/taskfile-tui](https://github.com/acxelerator/homebrew-t
 brew tap acxelerator/fzftask
 brew trust acxelerator/fzftask   # Homebrew 6.0+ requires trusting third-party taps
 brew install fzftask
+
+# Enable the zsh integration so picks load onto your prompt (see Shell integration)
+echo 'source $(brew --prefix)/opt/fzftask/share/fzftask/fzftask.zsh' >> ~/.zshrc
 ```
 
 See [HOMEBREW.md](HOMEBREW.md) for tap and release details.
@@ -35,7 +38,8 @@ cargo run
 | `Backspace` | filter | Delete a character from filter      |
 | `↑` / `↓`   | both   | Move selection                      |
 
-The filter box does a case-insensitive substring match on task names.
+The filter box does a case-insensitive fuzzy (subsequence) match on task
+names, so `delo` matches `deploy`.
 
 ### Required variables
 

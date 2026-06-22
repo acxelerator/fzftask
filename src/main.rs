@@ -176,6 +176,14 @@ impl RequiresState {
     }
 }
 
+/// Fuzzy match: every character of `needle` appears in `haystack` in order
+/// (not necessarily contiguously). Both are expected to be lowercased already.
+/// e.g. `delo` matches `deploy`. An empty needle matches everything.
+fn fuzzy_match(haystack: &str, needle: &str) -> bool {
+    let mut chars = haystack.chars();
+    needle.chars().all(|n| chars.any(|h| h == n))
+}
+
 /// Quote a value for safe inclusion in the shell command line.
 fn shell_quote(value: &str) -> String {
     let safe = !value.is_empty()
@@ -347,15 +355,15 @@ impl App {
         };
     }
 
-    /// Recompute `filtered` from `input` (case-insensitive substring match on
-    /// task name) and keep the selection within bounds.
+    /// Recompute `filtered` from `input` (case-insensitive fuzzy subsequence
+    /// match on task name) and keep the selection within bounds.
     fn apply_filter(&mut self) {
         let query = self.input.to_lowercase();
         self.filtered = self
             .tasks
             .iter()
             .enumerate()
-            .filter(|(_, t)| query.is_empty() || t.name.to_lowercase().contains(&query))
+            .filter(|(_, t)| fuzzy_match(&t.name.to_lowercase(), &query))
             .map(|(i, _)| i)
             .collect();
 
@@ -791,5 +799,18 @@ mod tests {
         assert_eq!(shell_quote("hello world"), "'hello world'");
         assert_eq!(shell_quote(""), "''");
         assert_eq!(shell_quote("it's"), r#"'it'\''s'"#);
+    }
+
+    #[test]
+    fn fuzzy_match_is_subsequence() {
+        // Non-contiguous subsequence matches (the motivating example).
+        assert!(fuzzy_match("deploy", "delo"));
+        assert!(fuzzy_match("docs:serve", "dsv"));
+        assert!(fuzzy_match("build", "bld"));
+        // Empty query matches everything.
+        assert!(fuzzy_match("anything", ""));
+        // Order matters and missing chars fail.
+        assert!(!fuzzy_match("deploy", "yold"));
+        assert!(!fuzzy_match("build", "z"));
     }
 }
