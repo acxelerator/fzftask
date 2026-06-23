@@ -39,8 +39,10 @@ cargo run
 | `↑` / `↓`   | both   | Move selection                      |
 | `j` / `k`   | tasks  | Move selection down / up            |
 
-The filter box does a case-insensitive fuzzy (subsequence) match on task
-names, so `delo` matches `deploy`.
+The filter box does a case-insensitive fuzzy (subsequence) match on task names
+and their `aliases`, so `delo` matches `deploy`. A task selected by an alias
+still emits its real name (`task <name>`). Tasks marked `internal: true` are
+hidden.
 
 ### Required variables
 
@@ -69,11 +71,22 @@ tasks:
 Tasks pulled in via `includes` are listed with the include's namespace prefix
 (e.g. `docs:serve`), just like `task` itself. Nested includes and directory
 includes are followed; `optional: true` includes that are missing are skipped,
-and remote (`http(s)`) includes are ignored.
+and remote (`http(s)`) includes are ignored. These include options are honored:
+
+- `internal: true` — hide every task from the include;
+- `flatten: true` — merge without the namespace prefix;
+- `excludes: [..]` — drop the named tasks (used with `flatten`).
 
 ```yaml
 includes:
-  docs: ./taskfiles/docs.yml   # adds docs:serve, docs:build, …
+  docs: ./taskfiles/docs.yml       # adds docs:serve, docs:build, …
+  lib:
+    taskfile: ./lib/Taskfile.yml
+    flatten: true                  # adds its tasks without a `lib:` prefix
+    excludes: [helper]             # …except `helper`
+  private:
+    taskfile: ./private/Taskfile.yml
+    internal: true                 # none of its tasks are listed
 ```
 
 ## Shell integration

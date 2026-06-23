@@ -24,6 +24,7 @@ struct Task {
     summary: Option<String>,
     cmds: Vec<String>,
     requires: Vec<RequiredVar>,
+    aliases: Vec<String>,
 }
 
 /// Which pane currently has keyboard focus.
@@ -227,6 +228,7 @@ impl App {
                         summary: def.summary,
                         cmds: def.cmds,
                         requires: def.requires,
+                        aliases: def.aliases,
                     })
                     .collect();
                 if tasks.is_empty() {
@@ -364,7 +366,12 @@ impl App {
             .tasks
             .iter()
             .enumerate()
-            .filter(|(_, t)| fuzzy_match(&t.name.to_lowercase(), &query))
+            .filter(|(_, t)| {
+                fuzzy_match(&t.name.to_lowercase(), &query)
+                    || t.aliases
+                        .iter()
+                        .any(|a| fuzzy_match(&a.to_lowercase(), &query))
+            })
             .map(|(i, _)| i)
             .collect();
 
@@ -519,21 +526,22 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
 
 /// Render the task browser.
 fn browse_ui(f: &mut ratatui::Frame, app: &mut App) {
-    // Split vertically: main panes on top, then the filter box and command box.
+    // Split vertically: filter box on top, then the main panes, then the
+    // command box.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(0),
-            Constraint::Length(3),
-            Constraint::Length(3),
+            Constraint::Length(3), // filter
+            Constraint::Min(0),    // tasks | details
+            Constraint::Length(3), // command
         ])
         .split(f.area());
 
-    // Split the top area into two equal columns.
+    // Split the middle area into two equal columns.
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(rows[0]);
+        .split(rows[1]);
 
     // Left pane: filtered, selectable task list.
     let items: Vec<ListItem> = app
@@ -577,7 +585,7 @@ fn browse_ui(f: &mut ratatui::Frame, app: &mut App) {
         )
         .style(Style::default().fg(Color::Yellow));
 
-    f.render_widget(input, rows[1]);
+    f.render_widget(input, rows[0]);
 
     // Command box: live preview of what Enter will send to the shell. Tasks
     // with required variables show a hint that Enter starts an input flow.
@@ -598,8 +606,8 @@ fn browse_ui(f: &mut ratatui::Frame, app: &mut App) {
     // Show the cursor only while editing the filter.
     if app.focus == Focus::Filter {
         f.set_cursor_position((
-            rows[1].x + 1 + app.input.chars().count() as u16,
-            rows[1].y + 1,
+            rows[0].x + 1 + app.input.chars().count() as u16,
+            rows[0].y + 1,
         ));
     }
 }
@@ -712,6 +720,15 @@ fn detail_text(app: &App) -> Text<'static> {
             if let Some(summary) = &task.summary {
                 lines.push(Line::from(format!("  {summary}")));
             }
+            lines.push(Line::from(""));
+        }
+
+        if !task.aliases.is_empty() {
+            lines.push(Line::styled(
+                "aliases:",
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ));
+            lines.push(Line::from(format!("  {}", task.aliases.join(", "))));
             lines.push(Line::from(""));
         }
 

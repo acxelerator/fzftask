@@ -35,7 +35,7 @@ pub struct Taskfile {
 }
 
 /// An entry under `includes`: either a bare path string or a mapping with a
-/// `taskfile`/`dir`/`optional`.
+/// `taskfile`/`dir`/`optional`/`internal`/`flatten`/`excludes`.
 #[derive(Debug, Clone)]
 pub struct Include {
     /// Path to the included Taskfile (relative to the including file).
@@ -44,6 +44,12 @@ pub struct Include {
     pub dir: Option<String>,
     /// A missing optional include is silently skipped instead of erroring.
     pub optional: bool,
+    /// `internal: true` hides every task pulled in by this include.
+    pub internal: bool,
+    /// `flatten: true` merges the included tasks without a namespace prefix.
+    pub flatten: bool,
+    /// Task names to drop when flattening.
+    pub excludes: Vec<String>,
 }
 
 impl<'de> Deserialize<'de> for Include {
@@ -56,7 +62,7 @@ impl<'de> Deserialize<'de> for Include {
         enum Raw {
             /// `docs: ./docs/Taskfile.yml`
             Path(String),
-            /// `docs: { taskfile: ..., dir: ..., optional: true }`
+            /// `docs: { taskfile: ..., dir: ..., optional: true, ... }`
             Detailed {
                 #[serde(default)]
                 taskfile: Option<String>,
@@ -64,6 +70,12 @@ impl<'de> Deserialize<'de> for Include {
                 dir: Option<String>,
                 #[serde(default)]
                 optional: bool,
+                #[serde(default)]
+                internal: bool,
+                #[serde(default)]
+                flatten: bool,
+                #[serde(default)]
+                excludes: Vec<String>,
             },
         }
 
@@ -72,15 +84,24 @@ impl<'de> Deserialize<'de> for Include {
                 taskfile: Some(taskfile),
                 dir: None,
                 optional: false,
+                internal: false,
+                flatten: false,
+                excludes: Vec::new(),
             },
             Raw::Detailed {
                 taskfile,
                 dir,
                 optional,
+                internal,
+                flatten,
+                excludes,
             } => Include {
                 taskfile,
                 dir,
                 optional,
+                internal,
+                flatten,
+                excludes,
             },
         })
     }
@@ -97,6 +118,8 @@ pub struct TaskDef {
     pub cmds: Vec<String>,
     /// Variables the task declares under `requires.vars`.
     pub requires: Vec<RequiredVar>,
+    /// Alternative names the task can be matched/selected by (`aliases`).
+    pub aliases: Vec<String>,
     /// `internal: true` tasks are callable only by other tasks; hide them.
     pub internal: bool,
 }
@@ -119,7 +142,7 @@ impl Taskfile {
 
         let mut tasks = IndexMap::new();
         let mut visited = HashSet::new();
-        let version = merge_file(&path, "", &mut tasks, &mut visited, 0)?;
+        let version = merge_file(&path, "", &[], &mut tasks, &mut visited, 0)?;
 
         Ok(Taskfile {
             version,
@@ -137,11 +160,13 @@ fn find_taskfile(dir: &Path) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// Parse the Taskfile at `path`, add its tasks (prefixed with `prefix`) to
-/// `tasks`, then recurse into its includes. Returns the file's own `version`.
+/// Parse the Taskfile at `path`, add its tasks (prefixed with `prefix`, minus
+/// any in `excludes`) to `tasks`, then recurse into its includes. Returns the
+/// file's own `version`.
 fn merge_file(
     path: &Path,
     prefix: &str,
+    excludes: &[String],
     tasks: &mut IndexMap<String, TaskDef>,
     visited: &mut HashSet<PathBuf>,
     depth: usize,
@@ -158,14 +183,16 @@ fn merge_file(
     let contents = std::fs::read_to_string(path).map_err(LoadError::Io)?;
     let parsed: Taskfile = serde_yaml_ng::from_str(&contents).map_err(LoadError::Parse)?;
 
-    for (name, def) in parsed.tasks {
+    for (name, mut def) in parsed.tasks {
         // `internal: true` tasks are not meant to be invoked directly; hide them.
-        if def.internal {
+        if def.internal || excludes.iter().any(|e| e == &name) {
             continue;
         }
         let key = if prefix.is_empty() {
             name
         } else {
+            // Namespace the task and its aliases (e.g. `docs:build`, `docs:b`).
+            def.aliases = def.aliases.iter().map(|a| format!("{prefix}{a}")).collect();
             format!("{prefix}{name}")
         };
         tasks.insert(key, def);
@@ -173,11 +200,28 @@ fn merge_file(
 
     let base = path.parent().unwrap_or_else(|| Path::new("."));
     for (namespace, include) in &parsed.includes {
+        // An internal include hides all of its tasks, so skip it entirely.
+        if include.internal {
+            continue;
+        }
         let Some(include_path) = resolve_include(base, include) else {
             continue; // remote (http) or unresolved include
         };
-        let nested_prefix = format!("{prefix}{namespace}:");
-        match merge_file(&include_path, &nested_prefix, tasks, visited, depth + 1) {
+        // `flatten` merges without adding a namespace segment; `excludes` then
+        // drops the named tasks.
+        let (nested_prefix, nested_excludes): (String, &[String]) = if include.flatten {
+            (prefix.to_string(), &include.excludes)
+        } else {
+            (format!("{prefix}{namespace}:"), &[])
+        };
+        match merge_file(
+            &include_path,
+            &nested_prefix,
+            nested_excludes,
+            tasks,
+            visited,
+            depth + 1,
+        ) {
             Ok(_) => {}
             // Missing includes are tolerated (optional or not) so one broken
             // include does not make the whole TUI fail to load.
@@ -257,6 +301,8 @@ impl<'de> Deserialize<'de> for TaskDef {
                 #[serde(default)]
                 requires: Option<Requires>,
                 #[serde(default)]
+                aliases: Vec<String>,
+                #[serde(default)]
                 internal: bool,
             },
         }
@@ -333,6 +379,7 @@ impl<'de> Deserialize<'de> for TaskDef {
                 summary,
                 cmds,
                 requires,
+                aliases,
                 internal,
             } => TaskDef {
                 desc,
@@ -341,6 +388,7 @@ impl<'de> Deserialize<'de> for TaskDef {
                 requires: requires
                     .map(|r| r.vars.into_iter().map(VarSpec::into_required).collect())
                     .unwrap_or_default(),
+                aliases,
                 internal,
             },
         })
@@ -539,6 +587,78 @@ tasks:
         let tf = Taskfile::load_from_dir(&root).unwrap();
         assert!(tf.tasks.contains_key("build"));
         assert!(!tf.tasks.contains_key("_setup"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn parses_task_aliases_and_namespaces_them() {
+        let root = std::env::temp_dir().join(format!("fzftask-alias-{}", std::process::id()));
+        let docs = root.join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(
+            root.join("Taskfile.yml"),
+            "version: '3'\n\
+             includes:\n  docs: ./docs\n\
+             tasks:\n  \
+               build:\n    aliases: [b, bld]\n    cmds: [cargo build]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            docs.join("Taskfile.yml"),
+            "version: '3'\ntasks:\n  serve:\n    aliases: [s]\n    cmds: [mkdocs serve]\n",
+        )
+        .unwrap();
+
+        let tf = Taskfile::load_from_dir(&root).unwrap();
+        assert_eq!(tf.tasks["build"].aliases, ["b", "bld"]);
+        // Included task aliases get the namespace prefix too.
+        assert_eq!(tf.tasks["docs:serve"].aliases, ["docs:s"]);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn internal_include_is_hidden_and_flatten_excludes_work() {
+        let root = std::env::temp_dir().join(format!("fzftask-incadv-{}", std::process::id()));
+        let secret = root.join("secret");
+        let lib = root.join("lib");
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::create_dir_all(&lib).unwrap();
+
+        std::fs::write(
+            root.join("Taskfile.yml"),
+            "version: '3'\n\
+             includes:\n  \
+               secret:\n    taskfile: ./secret/Taskfile.yml\n    internal: true\n  \
+               lib:\n    taskfile: ./lib/Taskfile.yml\n    flatten: true\n    excludes: [helper]\n\
+             tasks:\n  build:\n    cmds: [cargo build]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            secret.join("Taskfile.yml"),
+            "version: '3'\ntasks:\n  deploy:\n    cmds: [echo deploy]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            lib.join("Taskfile.yml"),
+            "version: '3'\ntasks:\n  \
+               format:\n    cmds: [echo fmt]\n  \
+               helper:\n    cmds: [echo helper]\n",
+        )
+        .unwrap();
+
+        let tf = Taskfile::load_from_dir(&root).unwrap();
+        let names: Vec<&str> = tf.tasks.keys().map(|s| s.as_str()).collect();
+
+        assert!(names.contains(&"build"));
+        // internal include: none of its tasks appear (no `secret:deploy`).
+        assert!(!names.iter().any(|n| n.starts_with("secret:")));
+        // flatten: no namespace prefix...
+        assert!(names.contains(&"format"));
+        assert!(!names.contains(&"lib:format"));
+        // ...and excluded tasks are dropped.
+        assert!(!names.contains(&"helper"));
 
         std::fs::remove_dir_all(&root).ok();
     }

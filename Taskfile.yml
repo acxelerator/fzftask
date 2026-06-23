@@ -6,6 +6,7 @@ includes:
 tasks:
   build:
     desc: Build the project in debug mode
+    aliases: [b, compile]
     cmds:
       - cargo build
 
