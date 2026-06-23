@@ -134,11 +134,14 @@ pub struct RequiredVar {
 }
 
 impl Taskfile {
-    /// Find the nearest Taskfile in `dir`, parse it, and recursively merge any
-    /// `includes`. Tasks from an include are namespaced by the include key
-    /// (e.g. `docs:build`), matching `task`'s own behaviour.
+    /// Find the nearest Taskfile at or above `dir`, parse it, and recursively
+    /// merge any `includes`. Tasks from an include are namespaced by the
+    /// include key (e.g. `docs:build`), matching `task`'s own behaviour.
+    ///
+    /// Like `task`, this walks up parent directories, so fzftask works from any
+    /// subdirectory of a project whose Taskfile lives at the repo root.
     pub fn load_from_dir(dir: &Path) -> Result<Self, LoadError> {
-        let path = find_taskfile(dir).ok_or(LoadError::NotFound)?;
+        let path = find_taskfile_upwards(dir).ok_or(LoadError::NotFound)?;
 
         let mut tasks = IndexMap::new();
         let mut visited = HashSet::new();
@@ -158,6 +161,12 @@ fn find_taskfile(dir: &Path) -> Option<PathBuf> {
         .iter()
         .map(|name| dir.join(name))
         .find(|p| p.is_file())
+}
+
+/// Search `start` and each of its ancestor directories for a Taskfile, using
+/// the first one found (nearest wins).
+fn find_taskfile_upwards(start: &Path) -> Option<PathBuf> {
+    start.ancestors().find_map(find_taskfile)
 }
 
 /// Parse the Taskfile at `path`, add its tasks (prefixed with `prefix`, minus
@@ -269,7 +278,9 @@ pub enum LoadError {
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LoadError::NotFound => write!(f, "no Taskfile.yml found in the current directory"),
+            LoadError::NotFound => {
+                write!(f, "no Taskfile found in this directory or any parent")
+            }
             LoadError::Io(e) => write!(f, "failed to read Taskfile: {e}"),
             LoadError::Parse(e) => write!(f, "failed to parse Taskfile: {e}"),
         }
@@ -587,6 +598,24 @@ tasks:
         let tf = Taskfile::load_from_dir(&root).unwrap();
         assert!(tf.tasks.contains_key("build"));
         assert!(!tf.tasks.contains_key("_setup"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn finds_taskfile_in_parent_directory() {
+        // Taskfile at the "repo root", invoked from a nested subdirectory.
+        let root = std::env::temp_dir().join(format!("fzftask-up-{}", std::process::id()));
+        let nested = root.join("a/b/c");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(
+            root.join("Taskfile.yml"),
+            "version: '3'\ntasks:\n  build:\n    cmds: [cargo build]\n",
+        )
+        .unwrap();
+
+        let tf = Taskfile::load_from_dir(&nested).unwrap();
+        assert!(tf.tasks.contains_key("build"));
 
         std::fs::remove_dir_all(&root).ok();
     }

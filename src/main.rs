@@ -239,7 +239,7 @@ impl App {
             }
             Err(LoadError::NotFound) => (
                 Vec::new(),
-                Some("No Taskfile.yml found in the current directory".to_string()),
+                Some("No Taskfile found in this directory or any parent".to_string()),
             ),
             Err(e) => (Vec::new(), Some(e.to_string())),
         };
@@ -621,9 +621,9 @@ fn requires_ui(f: &mut ratatui::Frame, app: &mut App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // progress header
-            Constraint::Min(0),    // enum list or input
-            Constraint::Length(3), // live command preview
+            Constraint::Length(3), // requires (progress header)
+            Constraint::Length(3), // command (live preview)
+            Constraint::Min(0),    // enum list or "enter a value for …" input
             Constraint::Length(3), // hint footer
         ])
         .split(f.area());
@@ -640,6 +640,12 @@ fn requires_ui(f: &mut ratatui::Frame, app: &mut App) {
     .block(Block::default().title("requires").borders(Borders::ALL))
     .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
     f.render_widget(header, rows[0]);
+
+    // Live command preview that updates with every keystroke / selection.
+    let preview = Paragraph::new(state.preview_command())
+        .block(Block::default().title("command").borders(Borders::ALL))
+        .style(Style::default().fg(Color::Green));
+    f.render_widget(preview, rows[1]);
 
     if state.current_is_enum() {
         // Enum variable: pick from the candidate values.
@@ -661,7 +667,7 @@ fn requires_ui(f: &mut ratatui::Frame, app: &mut App) {
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol("> ");
-        f.render_stateful_widget(list, rows[1], &mut state.list);
+        f.render_stateful_widget(list, rows[2], &mut state.list);
     } else {
         // Free-form variable: type a value.
         let input = Paragraph::new(state.text.as_str())
@@ -671,18 +677,12 @@ fn requires_ui(f: &mut ratatui::Frame, app: &mut App) {
                     .borders(Borders::ALL),
             )
             .style(Style::default().fg(Color::Yellow));
-        f.render_widget(input, rows[1]);
+        f.render_widget(input, rows[2]);
         f.set_cursor_position((
-            rows[1].x + 1 + state.text.chars().count() as u16,
-            rows[1].y + 1,
+            rows[2].x + 1 + state.text.chars().count() as u16,
+            rows[2].y + 1,
         ));
     }
-
-    // Live command preview that updates with every keystroke / selection.
-    let preview = Paragraph::new(state.preview_command())
-        .block(Block::default().title("command").borders(Borders::ALL))
-        .style(Style::default().fg(Color::Green));
-    f.render_widget(preview, rows[2]);
 
     let hint = if state.current_is_enum() {
         "↑/↓ or j/k to choose, Enter to confirm, Esc to cancel"
