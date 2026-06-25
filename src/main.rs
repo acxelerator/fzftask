@@ -526,22 +526,22 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
 
 /// Render the task browser.
 fn browse_ui(f: &mut ratatui::Frame, app: &mut App) {
-    // Split vertically: filter box on top, then the main panes, then the
-    // command box.
+    // Split vertically: filter box on top, then the command box, then the
+    // main panes.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // filter
-            Constraint::Min(0),    // tasks | details
             Constraint::Length(3), // command
+            Constraint::Min(0),    // tasks | details
         ])
         .split(f.area());
 
-    // Split the middle area into two equal columns.
+    // Split the bottom area into two equal columns.
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(rows[1]);
+        .split(rows[2]);
 
     // Left pane: filtered, selectable task list.
     let items: Vec<ListItem> = app
@@ -601,7 +601,7 @@ fn browse_ui(f: &mut ratatui::Frame, app: &mut App) {
         .block(Block::default().title("command").borders(Borders::ALL))
         .style(Style::default().fg(Color::Green));
 
-    f.render_widget(command, rows[2]);
+    f.render_widget(command, rows[1]);
 
     // Show the cursor only while editing the filter.
     if app.focus == Focus::Filter {
