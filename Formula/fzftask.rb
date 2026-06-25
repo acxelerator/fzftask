@@ -2,7 +2,7 @@ class Fzftask < Formula
   desc "Terminal UI to fuzzy-find and run Taskfile tasks"
   homepage "https://github.com/acxelerator/fzftask"
   url "https://github.com/acxelerator/fzftask/archive/refs/tags/v0.1.8.tar.gz"
-  sha256 "PENDING_RELEASE"
+  sha256 "1071b73b9b3e50cf698e3dce79a4c3f76327477baee8a7ec28ae4988335256a8"
   license "MIT"
   head "https://github.com/acxelerator/fzftask.git", branch: "main"
 
