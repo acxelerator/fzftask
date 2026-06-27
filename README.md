@@ -2,7 +2,6 @@
 
 An fzf-style terminal user interface for browsing and running [Taskfile](https://taskfile.dev/) tasks, built with [ratatui](https://ratatui.rs/).
 
-Inspired by [acxelerator/taskfile-tui](https://github.com/acxelerator/homebrew-taskfile-tui).
 
 ## Install
 
@@ -16,8 +15,6 @@ brew install fzftask
 # Enable the zsh integration so picks load onto your prompt (see Shell integration)
 echo 'source $(brew --prefix)/opt/fzftask/share/fzftask/fzftask.zsh' >> ~/.zshrc
 ```
-
-See [HOMEBREW.md](HOMEBREW.md) for tap and release details.
 
 ### From source
 

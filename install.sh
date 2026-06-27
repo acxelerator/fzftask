@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build and install fzftask from source into ~/.local/bin.
-# (Homebrew users should `brew install` instead — see HOMEBREW.md.)
+# (Homebrew users should `brew install` instead — see the README.)
 set -e
 
 if ! command -v cargo &>/dev/null; then
