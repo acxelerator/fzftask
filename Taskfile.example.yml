@@ -1,0 +1,43 @@
+# Example Taskfile exercising `requires.vars` with `enum: { ref: ... }`.
+# Included from Taskfile.yml as `example`, so these show up as example:<task>.
+version: '3'
+
+vars:
+  ALLOWED_ENVS: [dev, staging, prod]
+  CONFIG:
+    sh: |
+      echo '{"allowed_environments": ["dev", "prod"]}'
+  AVAILABLE_SERVICES:
+    sh: printf 'api\nweb\n\nworker\n'
+
+tasks:
+  deploy:
+    desc: Pick ENV from a list var
+    requires:
+      vars:
+        - name: ENV
+          enum:
+            ref: .ALLOWED_ENVS
+    cmds:
+      - echo "Deploying to {{.ENV}}"
+
+  deploy-json:
+    desc: Pick ENV from JSON produced by a sh var
+    requires:
+      vars:
+        - name: ENV
+          enum:
+            ref: ( .CONFIG | fromJson ).allowed_environments
+    cmds:
+      - echo "Deploying to {{.ENV}}"
+
+  deploy-service:
+    desc: Pick SERVICE from newline-separated sh output, plus a free-form TAG
+    requires:
+      vars:
+        - name: SERVICE
+          enum:
+            ref: .AVAILABLE_SERVICES | splitLines | compact
+        - TAG
+    cmds:
+      - echo "Deploying {{.SERVICE}}:{{.TAG}}"

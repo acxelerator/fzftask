@@ -1,13 +1,19 @@
+use crate::template;
 use indexmap::IndexMap;
 use serde::Deserialize;
+use serde_yaml_ng::Value;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt,
     path::{Path, PathBuf},
+    process::{Command, Stdio},
 };
 
 /// Guard against pathological / cyclic include graphs.
 const MAX_INCLUDE_DEPTH: usize = 16;
+
+/// Guard against cyclic `ref` variables (`A: {ref: .B}`, `B: {ref: .A}`).
+const MAX_REF_DEPTH: usize = 16;
 
 /// Candidate file names for a Taskfile, in the order `task` itself searches.
 const TASKFILE_NAMES: &[&str] = &[
@@ -28,6 +34,9 @@ pub struct Taskfile {
     /// by the include key (e.g. `docs:build`).
     #[serde(default)]
     pub includes: IndexMap<String, Include>,
+    /// Global `vars`, kept raw; only used to resolve `enum: { ref: ... }`.
+    #[serde(default)]
+    pub vars: IndexMap<String, Value>,
     /// Task name -> definition. `IndexMap` preserves the order tasks appear
     /// in the file so the UI lists them the same way.
     #[serde(default)]
@@ -122,6 +131,8 @@ pub struct TaskDef {
     pub aliases: Vec<String>,
     /// `internal: true` tasks are callable only by other tasks; hide them.
     pub internal: bool,
+    /// Task-level `vars`, kept raw; only used to resolve `enum: { ref: ... }`.
+    pub vars: IndexMap<String, Value>,
 }
 
 /// A variable a task requires before it can run (`requires.vars`).
@@ -131,6 +142,9 @@ pub struct RequiredVar {
     /// Allowed values when the variable is constrained by an `enum`.
     /// Empty means any value is accepted (free-form input).
     pub enum_values: Vec<String>,
+    /// Template expression from `enum: { ref: ... }`. Resolved into
+    /// `enum_values` while loading; left empty (free-form) if it can't be.
+    pub enum_ref: Option<String>,
 }
 
 impl Taskfile {
@@ -145,11 +159,15 @@ impl Taskfile {
 
         let mut tasks = IndexMap::new();
         let mut visited = HashSet::new();
-        let version = merge_file(&path, "", &[], &mut tasks, &mut visited, 0)?;
+        // Like `task`, commands (and so `sh` vars) run from the root
+        // Taskfile's directory unless an include sets its own `dir`.
+        let work_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let version = merge_file(&path, work_dir, "", &[], &mut tasks, &mut visited, 0)?;
 
         Ok(Taskfile {
             version,
             includes: IndexMap::new(),
+            vars: IndexMap::new(),
             tasks,
         })
     }
@@ -174,6 +192,7 @@ fn find_taskfile_upwards(start: &Path) -> Option<PathBuf> {
 /// file's own `version`.
 fn merge_file(
     path: &Path,
+    work_dir: &Path,
     prefix: &str,
     excludes: &[String],
     tasks: &mut IndexMap<String, TaskDef>,
@@ -192,11 +211,17 @@ fn merge_file(
     let contents = std::fs::read_to_string(path).map_err(LoadError::Io)?;
     let parsed: Taskfile = serde_yaml_ng::from_str(&contents).map_err(LoadError::Parse)?;
 
+    let mut resolver = VarResolver {
+        globals: &parsed.vars,
+        work_dir,
+        cache: HashMap::new(),
+    };
     for (name, mut def) in parsed.tasks {
         // `internal: true` tasks are not meant to be invoked directly; hide them.
         if def.internal || excludes.iter().any(|e| e == &name) {
             continue;
         }
+        resolver.resolve_enum_refs(&mut def);
         let key = if prefix.is_empty() {
             name
         } else {
@@ -223,8 +248,13 @@ fn merge_file(
         } else {
             (format!("{prefix}{namespace}:"), &[])
         };
+        let nested_work_dir = match &include.dir {
+            Some(dir) => base.join(dir),
+            None => work_dir.to_path_buf(),
+        };
         match merge_file(
             &include_path,
+            &nested_work_dir,
             &nested_prefix,
             nested_excludes,
             tasks,
@@ -245,6 +275,99 @@ fn merge_file(
     }
 
     Ok(parsed.version)
+}
+
+/// Resolves `enum: { ref: ... }` against one Taskfile's variables.
+struct VarResolver<'a> {
+    globals: &'a IndexMap<String, Value>,
+    /// Directory `sh` vars run in.
+    work_dir: &'a Path,
+    /// Evaluated global vars, so each `sh` runs at most once per file.
+    cache: HashMap<String, Option<Value>>,
+}
+
+impl VarResolver<'_> {
+    fn resolve_enum_refs(&mut self, def: &mut TaskDef) {
+        for var in &mut def.requires {
+            if let Some(expr) = &var.enum_ref {
+                var.enum_values = self
+                    .eval(expr, &def.vars, 0)
+                    .and_then(template::into_strings)
+                    .unwrap_or_default();
+            }
+        }
+    }
+
+    fn eval(
+        &mut self,
+        expr: &str,
+        task_vars: &IndexMap<String, Value>,
+        depth: usize,
+    ) -> Option<Value> {
+        if depth > MAX_REF_DEPTH {
+            return None;
+        }
+        template::eval(expr, &mut |name| self.lookup(name, task_vars, depth))
+    }
+
+    /// Task vars shadow global vars, which shadow the environment.
+    fn lookup(
+        &mut self,
+        name: &str,
+        task_vars: &IndexMap<String, Value>,
+        depth: usize,
+    ) -> Option<Value> {
+        if let Some(raw) = task_vars.get(name) {
+            return self.var_value(raw, task_vars, depth);
+        }
+        if let Some(raw) = self.globals.get(name) {
+            if let Some(cached) = self.cache.get(name) {
+                return cached.clone();
+            }
+            // Global vars can't see task vars.
+            let value = self.var_value(raw, &IndexMap::new(), depth);
+            self.cache.insert(name.to_string(), value.clone());
+            return value;
+        }
+        std::env::var(name).ok().map(Value::String)
+    }
+
+    /// The value of a var definition: a literal, or `{sh|ref|value|map: ...}`.
+    fn var_value(
+        &mut self,
+        raw: &Value,
+        task_vars: &IndexMap<String, Value>,
+        depth: usize,
+    ) -> Option<Value> {
+        let Value::Mapping(map) = raw else {
+            return Some(raw.clone());
+        };
+        if let Some(cmd) = map.get("sh").and_then(Value::as_str) {
+            run_sh(cmd, self.work_dir).map(Value::String)
+        } else if let Some(expr) = map.get("ref").and_then(Value::as_str) {
+            self.eval(expr, task_vars, depth + 1)
+        } else {
+            map.get("value").or_else(|| map.get("map")).cloned()
+        }
+    }
+}
+
+/// Run a `sh` var like `task` does: stdout with the trailing newline trimmed.
+fn run_sh(cmd: &str, dir: &Path) -> Option<String> {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let trimmed = stdout.strip_suffix('\n').unwrap_or(&stdout);
+    Some(trimmed.strip_suffix('\r').unwrap_or(trimmed).to_string())
 }
 
 /// Resolve the path to an included Taskfile, or `None` for remote/unresolvable
@@ -315,6 +438,8 @@ impl<'de> Deserialize<'de> for TaskDef {
                 aliases: Vec<String>,
                 #[serde(default)]
                 internal: bool,
+                #[serde(default)]
+                vars: IndexMap<String, Value>,
             },
         }
 
@@ -334,8 +459,22 @@ impl<'de> Deserialize<'de> for TaskDef {
             Detailed {
                 name: String,
                 #[serde(default, rename = "enum")]
-                enum_values: Vec<String>,
+                enum_spec: Option<EnumSpec>,
             },
+        }
+
+        /// An `enum`: a literal list, or `{ ref: <template expression> }`.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum EnumSpec {
+            List(Vec<String>),
+            Ref {
+                #[serde(rename = "ref")]
+                expr: String,
+            },
+            // Catch-all so an unexpected shape falls back to free-form input
+            // instead of failing the whole task. Must be last.
+            Other(serde::de::IgnoredAny),
         }
 
         impl VarSpec {
@@ -343,9 +482,20 @@ impl<'de> Deserialize<'de> for TaskDef {
                 match self {
                     VarSpec::Name(name) => RequiredVar {
                         name,
-                        enum_values: Vec::new(),
+                        ..Default::default()
                     },
-                    VarSpec::Detailed { name, enum_values } => RequiredVar { name, enum_values },
+                    VarSpec::Detailed { name, enum_spec } => {
+                        let (enum_values, enum_ref) = match enum_spec {
+                            Some(EnumSpec::List(values)) => (values, None),
+                            Some(EnumSpec::Ref { expr }) => (Vec::new(), Some(expr)),
+                            Some(EnumSpec::Other(_)) | None => (Vec::new(), None),
+                        };
+                        RequiredVar {
+                            name,
+                            enum_values,
+                            enum_ref,
+                        }
+                    }
                 }
             }
         }
@@ -392,6 +542,7 @@ impl<'de> Deserialize<'de> for TaskDef {
                 requires,
                 aliases,
                 internal,
+                vars,
             } => TaskDef {
                 desc,
                 summary,
@@ -401,6 +552,7 @@ impl<'de> Deserialize<'de> for TaskDef {
                     .unwrap_or_default(),
                 aliases,
                 internal,
+                vars,
             },
         })
     }
@@ -509,6 +661,80 @@ tasks:
         // Detailed name with enum candidates.
         assert_eq!(deploy.requires[1].name, "ENV");
         assert_eq!(deploy.requires[1].enum_values, ["dev", "staging", "prod"]);
+    }
+
+    // Mirrors the "Using variable references for enum values" examples in the
+    // Task docs: a global list var, a `sh` var read as JSON, and `sh` output
+    // split into lines. `sh` runs in the Taskfile's directory.
+    #[test]
+    fn resolves_enum_refs_from_vars() {
+        let root = std::env::temp_dir().join(format!("fzftask-enumref-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("services/api")).unwrap();
+        std::fs::create_dir_all(root.join("services/web")).unwrap();
+        std::fs::write(
+            root.join("config.json"),
+            r#"{"allowed_environments": ["dev", "prod"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("Taskfile.yml"),
+            r#"
+version: '3'
+vars:
+  ALLOWED_ENVS: [dev, staging, prod]
+  CONFIG:
+    sh: cat config.json
+  AVAILABLE_SERVICES:
+    sh: ls services/
+tasks:
+  list:
+    requires:
+      vars:
+        - name: ENV
+          enum:
+            ref: .ALLOWED_ENVS
+  json:
+    requires:
+      vars:
+        - name: ENV
+          enum:
+            ref: ( .CONFIG | fromJson ).allowed_environments
+  lines:
+    requires:
+      vars:
+        - name: SERVICE
+          enum:
+            ref: .AVAILABLE_SERVICES | splitLines | compact
+  task-var:
+    vars:
+      ALLOWED_ENVS: [qa]
+    requires:
+      vars:
+        - name: ENV
+          enum:
+            ref: .ALLOWED_ENVS
+  broken:
+    requires:
+      vars:
+        - name: ENV
+          enum:
+            ref: .NOPE_NOT_DEFINED_ANYWHERE
+"#,
+        )
+        .unwrap();
+
+        let tf = Taskfile::load_from_dir(&root).unwrap();
+        let enums = |task: &str| tf.tasks[task].requires[0].enum_values.clone();
+
+        assert_eq!(enums("list"), ["dev", "staging", "prod"]);
+        assert_eq!(enums("json"), ["dev", "prod"]);
+        assert_eq!(enums("lines"), ["api", "web"]);
+        // Task-level vars shadow global ones.
+        assert_eq!(enums("task-var"), ["qa"]);
+        // An unresolvable ref degrades to free-form input, not a load error.
+        assert!(enums("broken").is_empty());
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

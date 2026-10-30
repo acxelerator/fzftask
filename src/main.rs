@@ -1,4 +1,5 @@
 mod taskfile;
+mod template;
 
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
@@ -776,6 +777,7 @@ mod tests {
         RequiredVar {
             name: name.to_string(),
             enum_values: enums.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
         }
     }
 

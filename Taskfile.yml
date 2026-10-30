@@ -2,6 +2,7 @@ version: '3'
 
 includes:
   docs: ./taskfiles/docs.yml
+  example: ./Taskfile.example.yml   # enum `ref` examples (example:deploy, ...)
 
 tasks:
   build:

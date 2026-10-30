@@ -63,6 +63,32 @@ tasks:
           enum: [dev, staging, prod]
 ```
 
+An `enum` can also [reference a variable](https://taskfile.dev/docs/guide/required-variables#using-variable-references-for-enum-values)
+with `ref:`. The reference is resolved from the task's and the Taskfile's
+`vars` (and the environment) when fzftask starts; `sh:` vars it depends on are
+run in the Taskfile's directory. Variable references, field access,
+parentheses and the `fromJson`, `splitLines`, `compact`, `trim`, `uniq` and
+`sortAlpha` functions are supported. If a reference can't be resolved, the
+variable falls back to free-form input.
+
+```yaml
+vars:
+  ALLOWED_ENVS: [dev, staging, prod]
+  SERVICES:
+    sh: ls services/
+
+tasks:
+  deploy:
+    requires:
+      vars:
+        - name: ENV
+          enum:
+            ref: .ALLOWED_ENVS
+        - name: SERVICE
+          enum:
+            ref: .SERVICES | splitLines | compact
+```
+
 ### Includes
 
 Tasks pulled in via `includes` are listed with the include's namespace prefix

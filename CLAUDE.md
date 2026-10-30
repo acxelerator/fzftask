@@ -26,7 +26,7 @@ pipe, send keystrokes to the pty, and read the emitted command from the pipe.
 
 ## Architecture
 
-Two source files, one binary.
+Three source files, one binary.
 
 ### `src/main.rs` — UI and app state
 
@@ -63,14 +63,26 @@ Two source files, one binary.
     the `Cmd::Other(IgnoredAny)` catch-all drops unexpected entries (e.g. a `null`
     produced by a comment-only list item `- # note`) instead of failing the whole
     parse;
-  - `requires.vars` entries are a bare name or `{name, enum}`;
+  - `requires.vars` entries are a bare name or `{name, enum}`, where `enum` is
+    a list or `{ref: <template expr>}` (anything else → free-form input);
   - `includes` entries are a path string or `{taskfile, dir, optional}`.
-  - Unmodelled task fields (`dir`, `silent`, `status`, `vars`, ...) are ignored.
+  - Unmodelled task fields (`dir`, `silent`, `status`, ...) are ignored.
+- **`enum: { ref: ... }`** is resolved at load time by `VarResolver` in
+  `merge_file`: lookup order is task `vars` → file-global `vars` → environment;
+  `sh:` vars run (lazily, cached per file) in the work dir — the root
+  Taskfile's dir, or an include's `dir`. Unresolvable refs leave
+  `enum_values` empty, i.e. free-form input.
 
 When a parse change is needed, reproduce against a real-world Taskfile (the
 `paak-develop/raund` repo's `taskfile.*.yml` were the source of several edge
 cases) and add a regression test that mirrors the construct rather than copying
 the file.
+
+### `src/template.rs` — enum `ref` evaluator
+
+A minimal Go-template subset (`.VAR.field`, `( ... )`, `|` pipelines, prefix
+calls like `fromJson .X`, and `splitLines`/`compact`/`fromJson`/`trim`/`uniq`/
+`sortAlpha`). Unsupported syntax evaluates to `None` rather than erroring.
 
 ## Releasing
 
